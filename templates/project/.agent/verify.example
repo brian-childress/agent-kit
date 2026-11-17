@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Per-project override for the global `verify` command (any harness).
+# Rename to .agent/verify and `chmod +x` it to replace auto-detection entirely.
+set -euo pipefail
+cd "$(git rev-parse --show-toplevel)"
+pnpm lint
+pnpm type-check
+[ "${1:-}" = "--quick" ] || pnpm test

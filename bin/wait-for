@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# wait-for — block until a condition holds; replaces ad-hoc sleep/until loops.
+# Usage:
+#   wait-for [-t SECONDS] [-i SECONDS] url  <URL> [STATUS=200] [REGEX]   HTTP status (and body regex)
+#   wait-for [-t SECONDS] [-i SECONDS] port <HOST:PORT>                  TCP port accepting connections
+#   wait-for [-t SECONDS] [-i SECONDS] file <PATH> [REGEX]                file exists (and contains regex)
+#   wait-for [-t SECONDS] [-i SECONDS] gone <PATTERN>                     no process matches pgrep -f PATTERN
+#   wait-for [-t SECONDS] [-i SECONDS] cmd -- <COMMAND...>                command exits 0
+# Defaults: -t 300 -i 5. Exit 0 when satisfied, 1 on timeout (prints last observation).
+# For CI/AWS prefer native waiters: gh run watch --exit-status, aws ecs wait services-stable, docker compose up --wait.
+set -u
+timeout=300; interval=5
+while [ $# -gt 0 ]; do case "$1" in -t) timeout="$2"; shift 2;; -i) interval="$2"; shift 2;; -h|--help) sed -n '2,11p' "$0"; exit 0;; *) break;; esac; done
+kind="${1:-}"; shift || true
+last=""
+check() {
+  case "$kind" in
+    url) local code; code=$(curl -sS -o "${TMPDIR:-/tmp}/wait-for.body" -w '%{http_code}' --max-time 10 "$1" 2>/dev/null)
+         last="HTTP $code"; [ "$code" = "${2:-200}" ] || return 1
+         [ -z "${3:-}" ] || grep -Eq "$3" "${TMPDIR:-/tmp}/wait-for.body" || { last="HTTP $code, body !~ /$3/"; return 1; };;
+    port) last="port closed"; nc -z -w 3 "${1%:*}" "${1##*:}" >/dev/null 2>&1;;
+    file) [ -e "$1" ] || { last="missing"; return 1; }; [ -z "${2:-}" ] || grep -Eq "$2" "$1" || { last="no match /$2/"; return 1; };;
+    gone) last="still running: $(pgrep -f "$1" | head -3 | tr '\n' ' ')"; ! pgrep -f "$1" >/dev/null;;
+    cmd) [ "${1:-}" = "--" ] && shift; last=$("$@" 2>&1 | tail -1); "$@" >/dev/null 2>&1;;
+    *) echo "wait-for: unknown kind '$kind' (url|port|file|gone|cmd)" >&2; exit 2;;
+  esac
+}
+start=$SECONDS
+until check "$@"; do
+  [ $((SECONDS-start)) -ge "$timeout" ] && { echo "wait-for: TIMEOUT after ${timeout}s ($kind $*): $last"; exit 1; }
+  sleep "$interval"
+done
+echo "wait-for: OK after $((SECONDS-start))s ($kind $*)"

@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# ecs-deploy-status — one-shot ECS deploy check: optionally waits for services-stable, then prints
+# running/desired, rollout state, and image tag per service; optionally asserts the tag contains a SHA.
+# Usage: ecs-deploy-status [-c CLUSTER] [-s "svc1 svc2"] [--sha SHA] [--wait] [--region R]
+# Defaults from env or <repo>/.agent/env: ECS_CLUSTER, ECS_SERVICES, AWS_REGION, AWS_PROFILE
+set -u
+. "$(dirname "$(readlink -f "$0")")/_lib.sh"
+cluster="${ECS_CLUSTER:-}"; services="${ECS_SERVICES:-}"; sha=""; wait=0; region="${AWS_REGION:-${AWS_DEFAULT_REGION:-us-east-1}}"
+while [ $# -gt 0 ]; do case "$1" in
+  -c) cluster="$2"; shift;; -s) services="$2"; shift;; --sha) sha="$2"; shift;; --wait) wait=1;; --region) region="$2"; shift;;
+  -h|--help) sed -n '2,5p' "$0"; exit 0;; esac; shift; done
+[ -n "$cluster" ] || { echo "ecs-deploy-status: set -c CLUSTER or ECS_CLUSTER"; exit 2; }
+[ -n "$services" ] || services=$(aws ecs list-services --cluster "$cluster" --region "$region" --query 'serviceArns[]' --output text | tr '\t' '\n' | sed 's#.*/##' | tr '\n' ' ')
+# shellcheck disable=SC2086
+if [ $wait = 1 ]; then
+  if aws ecs wait services-stable --cluster "$cluster" --services $services --region "$region"; then echo "stable: $services"; else echo "NOT STABLE after aws ecs wait"; fi
+fi
+fail=0
+# shellcheck disable=SC2086
+aws ecs describe-services --cluster "$cluster" --services $services --region "$region" \
+  --query 'services[].[serviceName,runningCount,desiredCount,deployments[0].rolloutState,taskDefinition]' --output text |
+while read -r name run want state td; do
+  img=$(aws ecs describe-task-definition --task-definition "$td" --region "$region" --query 'taskDefinition.containerDefinitions[0].image' --output text)
+  tag="${img##*:}"; ok=PASS
+  { [ "$run" = "$want" ] && [ "$state" = COMPLETED ]; } || ok=WAIT
+  [ -n "$sha" ] && case "$tag" in *"$sha"*|*"${sha:0:7}"*) ;; *) ok=FAIL;; esac
+  printf '%-5s %-40s %s/%s %-12s %s\n' "$ok" "$name" "$run" "$want" "$state" "$tag"
+  [ $ok = PASS ] || exit 1
+done || fail=1
+exit $fail

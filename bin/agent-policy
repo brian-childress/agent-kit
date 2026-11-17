@@ -1,0 +1,4 @@
+#!/bin/sh
+# agent-policy — harness-neutral shell command policy (see policy/agent_policy.py).
+KIT="${AGENT_KIT_HOME:-$(cd "$(dirname "$(readlink -f "$0" 2>/dev/null || echo "$0")")/.." && pwd)}"
+exec python3 -I "$KIT/policy/agent_policy.py" "$@"

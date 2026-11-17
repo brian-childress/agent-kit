@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# smoke — deterministic HTTP smoke test from a per-project checklist.
+# Usage: smoke [ENV=local] [--base URL]
+# Reads <repo>/.agent/smoke/<ENV>.txt (legacy: .claude/smoke). Line format (blank lines and # comments ignored):
+#   BASE https://staging.example.com            (optional; relative paths are joined to it)
+#   <METHOD?> <URL|/path> <STATUS> [REGEX...]   e.g.  /health 200 ok
+#                                                     POST /api/x 401
+# Exit 0 if every line passes. Template: <kit>/templates/project/.agent/smoke/staging.txt
+set -u
+. "$(dirname "$(readlink -f "$0")")/_lib.sh"
+env="local"; base=""
+while [ $# -gt 0 ]; do case "$1" in --base) base="$2"; shift;; -h|--help) sed -n '2,8p' "$0"; exit 0;; *) env="$1";; esac; shift; done
+root=$(repo_root .); list="$root/.agent/smoke/$env.txt"
+[ -f "$list" ] || [ ! -f "$root/.claude/smoke/$env.txt" ] || list="$root/.claude/smoke/$env.txt"
+[ -f "$list" ] || { echo "smoke: no checklist at $list (run project-checks-init, or copy $KIT_HOME/templates/project/.agent/smoke/staging.txt)"; exit 2; }
+pass=0; fail=0; body="${TMPDIR:-/tmp}/smoke.body"
+set -f  # no globbing of checklist words
+while IFS= read -r line || [ -n "$line" ]; do
+  line="${line%%#*}"
+  # shellcheck disable=SC2086
+  set -- $line; [ $# = 0 ] && continue
+  if [ "$1" = BASE ]; then [ -z "$base" ] && base="$2"; continue; fi
+  method=GET; case "$1" in GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS) method="$1"; shift;; esac
+  url="$1"; want="${2:-200}"; shift; [ $# -gt 0 ] && shift
+  case "$url" in http*) ;; *) url="${base%/}$url";; esac
+  code=$(curl -sS -X "$method" -o "$body" -w '%{http_code}' --max-time 20 "$url" 2>/dev/null)
+  ok=1; why=""; [ "$code" = "$want" ] || { ok=0; why="status $code != $want"; }
+  for re in "$@"; do grep -Eq "$re" "$body" || { ok=0; why="$why body !~ /$re/"; }; done
+  if [ $ok = 1 ]; then pass=$((pass+1)); printf 'PASS  %-6s %s\n' "$method" "$url"
+  else fail=$((fail+1)); printf 'FAIL  %-6s %s  (%s)\n' "$method" "$url" "$why"; fi
+done < "$list"
+echo "smoke[$env]: $pass passed, $fail failed"; exit $((fail > 0))

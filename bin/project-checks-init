@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# project-checks-init — opt a repo into the shared deterministic checks (run explicitly; never automatic).
+# Copies <kit>/templates/project files (lefthook.yml, .agent-policy.json, .agent/*) that don't already
+# exist, then installs lefthook git hooks.
+# Usage: project-checks-init [--no-hooks] [DIR=repo root]
+set -u
+. "$(dirname "$(readlink -f "$0")")/_lib.sh"
+hooks=1; target=.
+for a in "$@"; do case "$a" in --no-hooks) hooks=0;; -h|--help) sed -n '2,5p' "$0"; exit 0;; *) target="$a";; esac; done
+root=$(repo_root "$target"); tpl="$KIT_HOME/templates/project"
+(cd "$tpl" && find . -type f) | while read -r rel; do
+  dest="$root/${rel#./}"
+  if [ -e "$dest" ]; then echo "keep   ${rel#./} (exists)"; else mkdir -p "$(dirname "$dest")"; cp "$tpl/$rel" "$dest"; echo "added  ${rel#./}"; fi
+done
+if [ $hooks = 1 ]; then
+  if [ -d "$root/.husky" ]; then echo "skip   lefthook install (repo uses husky; port lefthook.yml commands there)"
+  elif (cd "$root" && lefthook install); then echo "hooks  lefthook installed"; fi
+fi
+echo "Edit lefthook.yml, .agent-policy.json and .agent/* to fit this repo, then commit them."

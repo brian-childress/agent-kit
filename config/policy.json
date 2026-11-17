@@ -1,0 +1,84 @@
+{
+  "_doc": "Harness-neutral command policy. Overlays (merged in order): ~/.config/agent-kit/policy.json, <repo>/.agent-policy.json. Lists are appended; scalars/objects override.",
+  "allow_local_writes": true,
+  "guards": {
+    "no_ai_trailers": true,
+    "gitleaks_on_commit": true,
+    "block_shell_edits": true
+  },
+  "post_edit": true,
+  "rewrite_hints": { "enabled": true, "harnesses": ["claude"], "max_consecutive": 2 },
+  "temp_dirs": ["/tmp", "/private/tmp", "/var/folders", "/private/var/folders", "$TMPDIR"],
+  "write_allow_globs": [".artifacts/*", ".artifacts/**", "*.log"],
+
+  "readonly_commands": [
+    "cat", "head", "tail", "grep", "egrep", "fgrep", "rg", "ag", "wc", "sort", "uniq", "cut", "tr", "paste", "join",
+    "comm", "cmp", "diff", "column", "nl", "fold", "fmt", "rev", "tac", "jq", "ls", "tree", "stat", "file", "du", "df",
+    "which", "type", "whereis", "basename", "dirname", "realpath", "readlink", "pwd", "date", "cal", "echo", "printf",
+    "true", "false", "test", "[", "[[", "sleep", "seq", "expr", "uname", "hostname", "whoami", "id", "printenv",
+    "sw_vers", "uptime", "ps", "pgrep", "lsof", "netstat", "dig", "nslookup", "host", "md5", "md5sum", "shasum",
+    "sha256sum", "base64", "od", "xxd", "hexdump", "strings", "cd", "pushd", "popd", "export", "unset", "set",
+    "shopt", "wait", ":", "nc", "openssl", "getconf", "locale", "tput", "mktemp",
+    "verify", "wait-for", "smoke", "tf-check", "ecs-deploy-status", "agent-policy", "agent-post-edit",
+    "tflint", "gitleaks", "shellcheck", "actionlint", "hadolint"
+  ],
+
+  "readonly_prefixes": [
+    "git status", "git log", "git diff", "git show", "git fetch", "git rev-parse", "git rev-list", "git merge-base",
+    "git ls-files", "git ls-tree", "git ls-remote", "git grep", "git check-ignore", "git cat-file", "git blame",
+    "git describe", "git shortlog", "git reflog", "git worktree list", "git stash list", "git stash show",
+    "git for-each-ref", "git name-rev", "git cherry", "git merge-tree", "git count-objects", "git show-ref",
+    "git remote -v", "git remote show", "git remote get-url", "git config --get", "git config --list",
+    "git config -l", "git config --get-all", "git version", "git help", "git var",
+    "gh pr view", "gh pr list", "gh pr checks", "gh pr diff", "gh pr status", "gh run view", "gh run list",
+    "gh run watch", "gh repo view", "gh repo list", "gh issue view", "gh issue list", "gh issue status",
+    "gh release view", "gh release list", "gh auth status", "gh workflow list", "gh workflow view", "gh search",
+    "gh status",
+    "terraform fmt", "terraform validate", "terraform plan", "terraform init", "terraform show", "terraform version",
+    "terraform providers", "terraform graph", "terraform state list", "terraform workspace list",
+    "terraform workspace show", "terraform -version", "terraform --version",
+    "docker ps", "docker logs", "docker inspect", "docker images", "docker info", "docker version", "docker top",
+    "docker port", "docker stats --no-stream", "docker compose ps", "docker compose logs", "docker compose config",
+    "docker compose ls", "docker compose images", "docker compose top", "docker compose version",
+    "openspec validate", "openspec status", "openspec list", "openspec show", "openspec instructions", "openspec view",
+    "dotnet build", "dotnet test", "dotnet restore", "dotnet --version", "dotnet --info", "dotnet list",
+    "dotnet format --verify-no-changes",
+    "kubectl get", "kubectl describe", "kubectl logs", "kubectl top", "kubectl explain", "kubectl version",
+    "kubectl config view", "kubectl config current-context", "kubectl config get-contexts",
+    "brew list", "brew info", "brew search", "brew --version", "brew outdated", "brew deps", "brew --prefix",
+    "lefthook run", "lefthook validate", "lefthook version",
+    "node --version", "node -v", "python3 --version", "python3 -V", "pnpm --version", "npm --version",
+    "npm ls", "npm view", "pnpm ls", "pnpm list", "pnpm why", "npm outdated", "pnpm outdated",
+    "aws sts get-caller-identity", "aws configure list", "aws configure list-profiles", "aws configure get",
+    "aws s3 ls", "aws logs tail", "aws logs filter-log-events", "aws logs get-log-events"
+  ],
+
+  "package_scripts_readonly": [
+    "test", "lint", "typecheck", "type-check", "check-types", "check", "build", "verify", "format:check",
+    "test:unit", "test:ci", "lint:check", "astro check", "validate"
+  ],
+  "js_tools_readonly": [
+    "tsc", "vitest", "jest", "biome check", "biome lint", "biome ci", "eslint", "prettier --check",
+    "prettier -c", "astro check", "next lint", "playwright test", "knip", "depcheck", "ts-prune"
+  ],
+
+  "local_write_prefixes": [
+    "mkdir", "touch",
+    "git add", "git commit", "git switch", "git checkout -b", "git checkout -B", "git stash push", "git stash save",
+    "git stash pop", "git stash apply", "git worktree add", "git mv", "git pull --ff-only",
+    "pnpm install", "pnpm i", "npm install", "npm ci", "npm i", "yarn install", "bun install",
+    "biome check --write", "biome format --write", "biome lint --write", "prettier --write", "eslint --fix",
+    "dotnet format", "lefthook install", "terraform fmt"
+  ],
+  "local_package_scripts": ["format", "lint:fix", "format:write"],
+
+  "aws_readonly_op_regex": "^(describe-|list-|get-|lookup-|search-|head-|batch-get-|wait$|filter-log-events$|tail$|ls$)",
+  "aws_sensitive_ops": [
+    "secretsmanager get-secret-value", "secretsmanager batch-get-secret-value", "ecr get-login-password",
+    "sts get-session-token", "sts get-federation-token", "codeartifact get-authorization-token",
+    "ecr get-authorization-token", "lambda get-function", "cognito-idp get-user"
+  ],
+
+  "allow_prefixes": [],
+  "deny_prefixes": []
+}

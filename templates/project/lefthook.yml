@@ -1,0 +1,33 @@
+# Shared deterministic git hooks (template from <agent-kit>/templates/project/lefthook.yml).
+# Git hooks run for every harness and for humans, so they are the strongest portable layer.
+# Install: `lefthook install` (or `project-checks-init`). Remove/adjust commands to fit this repo.
+pre-commit:
+  parallel: true
+  commands:
+    biome:
+      glob: "*.{js,jsx,ts,tsx,mjs,cjs,json,jsonc,css}"
+      run: npx --no-install biome check --write --no-errors-on-unmatched {staged_files}
+      stage_fixed: true
+    typecheck:
+      glob: "*.{ts,tsx}"
+      run: npx --no-install tsc --noEmit --pretty false
+    terraform-fmt:
+      glob: "*.{tf,tfvars}"
+      run: terraform fmt {staged_files}
+      stage_fixed: true
+    tflint:
+      glob: "*.tf"
+      run: command -v tflint >/dev/null && tflint --recursive || true
+    openspec:
+      glob: "openspec/**"
+      run: openspec validate --all --strict --no-interactive
+    shellcheck:
+      glob: "*.sh"
+      run: shellcheck -S error {staged_files}
+    gitleaks:
+      run: gitleaks git --pre-commit --staged --redact --no-banner
+
+commit-msg:
+  commands:
+    no-ai-attribution:
+      run: "! grep -Eiq 'co-authored-by:|generated with \\[?claude' {1} || { echo 'Remove AI attribution trailers from the commit message'; exit 1; }"

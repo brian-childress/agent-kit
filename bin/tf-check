@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# tf-check — terraform fmt + validate (+ tflint if installed) for every Terraform dir in a repo,
+# without touching backends, state, or .terraform/ (uses a throwaway TF_DATA_DIR and a shared plugin cache).
+# Usage: tf-check [DIR=repo root] [--no-validate]
+set -u
+. "$(dirname "$(readlink -f "$0")")/_lib.sh"
+validate=1; target=.
+for a in "$@"; do case "$a" in --no-validate) validate=0;; -h|--help) sed -n '2,4p' "$0"; exit 0;; *) target="$a";; esac; done
+root=$(cd "$target" && pwd); fail=0
+export TF_PLUGIN_CACHE_DIR="$HOME/.terraform.d/plugin-cache" TF_IN_AUTOMATION=1; mkdir -p "$TF_PLUGIN_CACHE_DIR"
+if out=$(terraform fmt -check -recursive -no-color "$root" 2>&1); then echo "PASS  fmt"
+else fail=1; echo "FAIL  fmt (run: terraform fmt -recursive)"; printf '%s\n' "$out" | sed 's/^/      /' | tail -20; fi
+dirs=$(cd "$root" && find . -name '*.tf' -not -path '*/.terraform/*' -not -path '*/node_modules/*' -exec dirname {} \; | sort -u)
+for d in $dirs; do
+  abs="$root/${d#./}"
+  if [ $validate = 1 ]; then
+    tmp=$(mktemp -d); had_lock=0; [ -f "$abs/.terraform.lock.hcl" ] && had_lock=1
+    lockflag=""; [ $had_lock = 1 ] && lockflag="-lockfile=readonly"
+    # shellcheck disable=SC2086
+    if o=$(cd "$abs" && TF_DATA_DIR="$tmp" terraform init -backend=false -input=false -no-color $lockflag 2>&1 && TF_DATA_DIR="$tmp" terraform validate -no-color 2>&1); then
+      echo "PASS  validate $d"
+    else fail=1; echo "FAIL  validate $d"; printf '%s\n' "$o" | grep -Ev '^[[:space:]]*$|Initializing|Installing|Installed|Finding|Reusing|partner|signed' | tail -15 | sed 's/^/      /'; fi
+    [ $had_lock = 0 ] && rm -f "$abs/.terraform.lock.hcl"; rm -rf "$tmp"
+  fi
+  if command -v tflint >/dev/null; then
+    if o=$(cd "$abs" && tflint --no-color 2>&1); then echo "PASS  tflint $d"
+    else fail=1; echo "FAIL  tflint $d"; printf '%s\n' "$o" | tail -15 | sed 's/^/      /'; fi
+  fi
+done
+exit $fail

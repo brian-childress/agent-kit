@@ -1,0 +1,11 @@
+{
+  "_doc": "Per-project overlay for agent-policy (all harnesses). Lists append to the global policy; scalars override. Delete what you don't need.",
+  "allow_prefixes": [],
+  "deny_prefixes": [],
+  "write_allow_globs": [],
+  "guards": {
+    "block_shell_edits": true,
+    "gitleaks_on_commit": true
+  },
+  "post_edit": true
+}

@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+# verify — run the project's deterministic checks with compact output (one line per stage;
+# last 40 lines of a failing stage; full logs in $TMPDIR/verify-*.log).
+# Resolution order (first match wins):
+#   1. <repo>/.agent/verify (or legacy .claude/verify), executable → exec'd with the same args
+#   2. package.json "verify" script         → <pm> run verify
+#   3. auto-detect stages: js (lint/typecheck/test scripts, else biome + tsc), tf (fmt + tflint),
+#      dotnet (build; test with --tests), openspec (validate --strict), secrets (gitleaks on uncommitted changes)
+# Usage: verify [--quick] [--only js,tf,...] [--skip dotnet,...] [--tests] [dir]
+#   --quick  skip test stages      --tests  also run dotnet test
+# Per-project config via env or <repo>/.agent/env: VERIFY_SKIP, VERIFY_ONLY
+set -u
+. "$(dirname "$(readlink -f "$0")")/_lib.sh"
+quick=0; tests=0; only="${VERIFY_ONLY:-}"; skip="${VERIFY_SKIP:-}"; target=.
+while [ $# -gt 0 ]; do case "$1" in
+  --quick) quick=1;; --tests) tests=1;; --only) only="$2"; shift;; --skip) skip="$2"; shift;;
+  -h|--help) sed -n '2,11p' "$0"; exit 0;; *) target="$1";; esac; shift; done
+root=$(repo_root "$target")
+for o in "$root/.agent/verify" "$root/.claude/verify"; do [ -x "$o" ] && exec "$o" "$@"; done
+if has_script "$root" verify; then cd "$root" && exec "$(js_pm "$root")" run verify; fi
+
+logdir="${TMPDIR:-/tmp}/verify-$(basename "$root")"; mkdir -p "$logdir"
+want() { case ",$skip," in *",$1,"*) return 1;; esac; [ -z "$only" ] && return 0; case ",$only," in *",$1,"*) return 0;; esac; return 1; }
+failed=0; ran=0
+stage() { # stage <name> <cmd...>
+  local name="$1"; shift; local log="$logdir/${name//:/-}.log" t0=$SECONDS
+  ran=$((ran+1))
+  if (cd "$root" && CI=1 FORCE_COLOR=0 NO_COLOR=1 "$@") >"$log" 2>&1; then
+    printf 'PASS  %-18s %3ss\n' "$name" $((SECONDS-t0))
+  else
+    failed=$((failed+1)); printf 'FAIL  %-18s %3ss  (%s)\n' "$name" $((SECONDS-t0)) "$log"
+    sed -E 's/\x1b\[[0-9;]*m//g' "$log" | grep -v '^[[:space:]]*$' | tail_lines 40 | sed 's/^/      /'
+  fi
+}
+
+if want js && [ -f "$root/package.json" ]; then
+  pm=$(js_pm "$root")
+  if has_script "$root" lint; then stage js:lint "$pm" run lint
+  elif [ -x "$root/node_modules/.bin/biome" ]; then stage js:biome "$root/node_modules/.bin/biome" check --reporter=summary .
+  fi
+  tc=""; for s in typecheck type-check check-types tsc; do has_script "$root" $s && { tc=$s; break; }; done
+  if [ -n "$tc" ]; then stage js:typecheck "$pm" run "$tc"
+  elif [ -f "$root/tsconfig.json" ] && [ -x "$root/node_modules/.bin/tsc" ]; then stage js:tsc "$root/node_modules/.bin/tsc" --noEmit --pretty false
+  fi
+  if [ $quick = 0 ] && has_script "$root" test; then stage js:test "$pm" run test; fi
+fi
+if want tf && [ -n "$(cd "$root" && git ls-files '*.tf' 2>/dev/null | head -1)" ]; then
+  stage tf:fmt terraform fmt -check -recursive -no-color
+  command -v tflint >/dev/null && stage tf:lint tflint --recursive --no-color
+fi
+if want dotnet; then
+  sln=$(cd "$root" && ls ./*.sln ./*.slnx 2>/dev/null | head -1)
+  if [ -n "$sln" ]; then
+    stage dotnet:build dotnet build "$sln" -nologo -v q -clp:ErrorsOnly
+    [ $tests = 1 ] && [ $quick = 0 ] && stage dotnet:test dotnet test "$sln" -nologo -v q --no-build
+  fi
+fi
+if want openspec && [ -d "$root/openspec" ] && command -v openspec >/dev/null; then
+  stage openspec openspec validate --all --strict --no-interactive
+fi
+if want secrets && command -v gitleaks >/dev/null && git -C "$root" rev-parse --git-dir >/dev/null 2>&1; then
+  stage secrets gitleaks git --pre-commit --redact --no-banner
+fi
+[ $ran = 0 ] && { echo "verify: no checks detected in $root (add .agent/verify or a package.json 'verify' script)"; exit 0; }
+if [ $failed = 0 ]; then echo "verify: all $ran stages passed"; else echo "verify: $failed of $ran stages failed"; fi
+exit $((failed > 0))

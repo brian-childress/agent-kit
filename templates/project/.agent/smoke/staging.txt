@@ -1,0 +1,6 @@
+# smoke checklist for `smoke staging` — one check per line:
+#   [METHOD] <URL|/path> <expected-status> [body-regex ...]
+BASE https://staging.example.com
+/                 200
+/health           200  ok
+/api/me           401
