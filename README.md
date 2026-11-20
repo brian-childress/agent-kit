@@ -45,7 +45,10 @@ Explain a decision: `agent-policy check 'cd repo && git log | head'`. Self-test:
 
 ## Per-project configuration
 
-- `.agent-policy.json`: overlay on `config/policy.json` (lists append, scalars override). Template in `templates/project`.
+- `.agent-policy.json`: overlay on `config/policy.json` (lists append, scalars override; `deny_prefixes` win over any
+  allow). Local dev setup, never committed: keep it in the repo's main checkout and list `/.agent-policy.json` in
+  `.git/info/exclude` (shared by all worktrees). Linked worktrees, including v2c's `.worktrees/`, inherit it from the
+  main checkout; a worktree's own file is layered on top. `project-checks-init` sets this up. Template in `templates/project`.
 - `.agent/env`: KEY=value env for the kit commands. `.agent/verify`, `.agent/smoke/<env>.txt`: command overrides.
 - User-wide overlay: `~/.config/agent-kit/policy.json`.
 - Env: `AGENT_ALLOW_SHELL_EDITS=1`, `AGENT_SKIP_GITLEAKS=1`, `AGENT_POST_EDIT=0`.

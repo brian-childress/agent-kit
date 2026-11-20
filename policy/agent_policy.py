@@ -66,10 +66,34 @@ def repo_root(cwd):
     return cwd
 
 
+def main_checkout(cwd):
+    """Root of the repo's main checkout (shared by every linked worktree), or None."""
+    try:
+        out = subprocess.run(["git", "-C", cwd, "rev-parse", "--path-format=absolute", "--git-common-dir"],
+                             capture_output=True, text=True, timeout=5)
+        if out.returncode == 0:
+            common = out.stdout.strip()
+            if os.path.basename(common) == ".git":
+                return os.path.dirname(common)
+    except Exception:
+        pass
+    return None
+
+
+def project_overlays(cwd):
+    """Project overlay files, lowest precedence first. `.agent-policy.json` is local dev setup, not committed:
+    it lives in the main checkout (ignored via .git/info/exclude) and every worktree of that repo inherits it.
+    A worktree may add its own file on top."""
+    root = repo_root(cwd)
+    main = main_checkout(cwd)
+    paths = [os.path.join(main, ".agent-policy.json")] if main and os.path.realpath(main) != os.path.realpath(root) else []
+    return paths + [os.path.join(root, ".agent-policy.json")]
+
+
 def load_policy(cwd):
     with open(os.path.join(KIT, "config", "policy.json")) as f:
         pol = json.load(f)
-    for p in (os.path.expanduser("~/.config/agent-kit/policy.json"), os.path.join(repo_root(cwd), ".agent-policy.json")):
+    for p in [os.path.expanduser("~/.config/agent-kit/policy.json")] + project_overlays(cwd):
         if os.path.isfile(p):
             try:
                 with open(p) as f:
@@ -172,6 +196,31 @@ def unquoted_newlines_to_semicolons(text):
     return "".join(out)
 
 
+LPAREN, RPAREN = "\x00AK_LP\x00", "\x00AK_RP\x00"
+
+
+def protect_escaped_parens(text):
+    """`find … \\( -name a -o -name b \\)`: keep escaped parens as literal words, not subshell operators."""
+    out, sq, dq, i = [], False, False, 0
+    while i < len(text):
+        c = text[i]
+        if c == "\\" and not sq and i + 1 < len(text):
+            nxt = text[i + 1]
+            if not dq and nxt in "()":
+                out.append(LPAREN if nxt == "(" else RPAREN); i += 2; continue
+            out.append(text[i:i + 2]); i += 2; continue
+        if c == "'" and not dq:
+            sq = not sq
+        elif c == '"' and not sq:
+            dq = not dq
+        out.append(c); i += 1
+    return "".join(out)
+
+
+def restore_parens(word):
+    return word.replace(LPAREN, "(").replace(RPAREN, ")")
+
+
 OPS = {";", "&&", "||", "|", "&", "|&", "(", ")", ";;"}
 REDIRS = {">", ">>", ">|", "&>", "&>>", ">&", "<", "<<", "<<-", "<<<", "<>", "<&"}
 
@@ -182,14 +231,17 @@ def tokenize(text):
     return list(lex)
 
 
-def split_commands(tokens):
-    """Split a token stream into simple commands: list of (words, redirects[(op, target)])."""
+def split_commands(tokens, ops=None):
+    """Split a token stream into simple commands: list of (words, redirects[(op, target)]).
+    If `ops` is a list, it receives the operator that follows each command (None for the last)."""
     cmds, words, redirs, i = [], [], [], 0
     while i < len(tokens):
         t = tokens[i]
         if t in OPS:
             if words or redirs:
                 cmds.append((words, redirs))
+                if ops is not None:
+                    ops.append(t)
             words, redirs = [], []
             i += 1; continue
         if t in REDIRS or re.fullmatch(r"[<>&|]+", t):
@@ -200,7 +252,36 @@ def split_commands(tokens):
         words.append(t); i += 1
     if words or redirs:
         cmds.append((words, redirs))
+        if ops is not None:
+            ops.append(None)
     return cmds
+
+
+STDIN_SOURCES = {"echo", "printf", "cat"}
+
+
+def bare_violations(cmds, ops, pol):
+    """Commands listed in `bare_commands` (e.g. v2c, whose output is already compact JSON) must run alone: no stdout
+    redirect, no pipe out, no chaining with other commands. Feeding stdin (heredoc, or echo/printf/cat piped in) is
+    fine. Returns the names of the bare commands that were wrapped."""
+    bare = set(pol.get("bare_commands", []))
+    if not bare:
+        return []
+    heads = [(normalize(w) or [""])[0] for w, _ in cmds]
+    out = []
+    for i, (h, (_, redirs)) in enumerate(zip(heads, [c for c in cmds])):
+        if h not in bare:
+            continue
+        wrapped = ops[i] == "|" or any(op in (">", ">>", ">|", "&>", "&>>") and t != "/dev/null" for op, t in redirs)
+        for j, hj in enumerate(heads):
+            if j == i or hj in bare:
+                continue
+            if j == i - 1 and ops[j] == "|" and hj in STDIN_SOURCES:
+                continue  # stdin source for this bare command
+            wrapped = True
+        if wrapped and h not in out:
+            out.append(h)
+    return out
 
 
 # ----------------------------------------------------------------------------- normalization
@@ -254,7 +335,7 @@ def normalize(words):
     h = w[0]
     if h == "git":
         return ["git"] + drop_opts(w[1:], {"-C", "-c", "--git-dir", "--work-tree", "--namespace"},
-                                   {"--no-pager", "-P", "--paginate", "--no-optional-locks", "--bare"},
+                                   {"--no-pager", "-P", "--paginate", "--no-optional-locks", "--bare", "-q", "--quiet"},
                                    ("--git-dir=", "--work-tree=", "-c=", "--namespace="))
     if h in ("pnpm", "npm", "yarn", "bun"):
         return [h] + drop_opts(w[1:], {"--dir", "-C", "--filter", "-F", "--prefix", "--workspace", "-w", "--cwd"},
@@ -313,6 +394,28 @@ def write_target_ok(path, ctx):
     return not rel.startswith("..") and any(fnmatch.fnmatch(rel, g) for g in ctx.pol.get("write_allow_globs", []))
 
 
+def project_script(w, ctx):
+    """`bash .agent/v2c/checks.sh …` or `./.agent/verify`: a repo-owned script listed in `project_scripts`
+    (paths relative to the root of the repo or worktree that contains the script)."""
+    names = ctx.pol.get("project_scripts", [])
+    if not names or not w:
+        return False
+    if w[0] in ("bash", "sh", "zsh") and len(w) > 1 and not w[1].startswith("-"):
+        script = w[1]
+    elif "/" in w[0]:
+        script = w[0]
+    else:
+        return False
+    if script.startswith("$") or SUBST in script:
+        return False
+    path = os.path.realpath(os.path.join(ctx.cwd, os.path.expanduser(script)))
+    root = repo_root(os.path.dirname(path)) if os.path.isdir(os.path.dirname(path)) else None
+    if not root:
+        return False
+    rel = os.path.relpath(path, os.path.realpath(root))
+    return not rel.startswith("..") and any(fnmatch.fnmatch(rel, g) for g in names)
+
+
 def classify_simple(words, ctx):
     """Return (decision, reason) for one simple command (words already include no operators)."""
     pol = ctx.pol
@@ -330,6 +433,8 @@ def classify_simple(words, ctx):
     if h in ("bash", "sh", "zsh", "dash") and len(w) >= 3 and re.fullmatch(r"-[a-z]*c", w[1]):
         res = evaluate(w[2], ctx.cwd, pol, 1)  # look inside `bash -c "..."`
         return res["decision"], res["reason"]
+    if project_script(w, ctx):
+        return ALLOW, ""
     if h == "cd" or h == "pushd":
         target = w[1] if len(w) > 1 else "~"
         if SUBST not in target and not target.startswith("$"):
@@ -468,8 +573,10 @@ def classify_simple(words, ctx):
             return ALLOW, ""
         return DEFER, "%s %s" % (h, script)
     if h in ("npx", "bunx"):
-        args = [a for a in w[1:] if a not in ("--no-install", "-y", "--yes", "--no")]
+        args = drop_opts(w[1:], {"--prefix"}, {"--no-install", "-y", "--yes", "--no"}, ("--prefix=",))
         return classify_js_tool(args, ctx)
+    if h == "node":
+        return classify_js_tool(w, ctx)  # `node --test` is listed in js_tools_readonly; other node runs defer
     if h in ("tsc", "vitest", "jest", "biome", "eslint", "prettier", "astro", "next", "playwright", "knip"):
         return classify_js_tool(w, ctx)
     if h == "python3" or h == "python":
@@ -602,12 +709,19 @@ def evaluate(raw, cwd=None, pol=None, depth=0):
     text, inner = extract_substitutions(text)
     ctx = Ctx(pol, cwd, bodies)
     try:
-        cmds = split_commands(tokenize(unquoted_newlines_to_semicolons(text)))
+        ops = []
+        cmds = split_commands(tokenize(protect_escaped_parens(unquoted_newlines_to_semicolons(text))), ops)
     except ValueError as e:
         return {"decision": DEFER, "reason": "unparseable: %s" % e, "parts": []}
+    cmds = [([restore_parens(x) for x in w], [(op, restore_parens(t)) for op, t in r]) for w, r in cmds]
     parts, normed = [], []
+    # `S=~/x; ls $S`: a standalone assignment whose variable is expanded later in the same command
+    assigned = [m.group(1) for w, _ in cmds if w and all(re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", x) for x in w)
+                for x in w for m in [re.match(r"^([A-Za-z_][A-Za-z0-9_]*)=", x)]]
     shape = {"cd": [w[1] if len(w) > 1 else "~" for w, _ in cmds if w and w[0] in ("cd", "pushd")] if len(cmds) > 1 else [],
-             "loop": any(w and w[0] in ("for", "while", "until", "select") for w, _ in cmds)}
+             "loop": any(w and w[0] in ("for", "while", "until", "select") for w, _ in cmds),
+             "vars": [v for v in dict.fromkeys(assigned) if re.search(r"\$\{?%s\b" % re.escape(v), raw)],
+             "bare": bare_violations(cmds, ops, pol)}
     for words, redirs in cmds:
         before = ctx.cwd
         d, r = classify_simple(words, ctx)
@@ -630,7 +744,8 @@ def evaluate(raw, cwd=None, pol=None, depth=0):
     if not blocking:
         return {"decision": ALLOW, "reason": "agent-policy: all %d part(s) read-only or permitted" % len(parts),
                 "parts": parts, "shape": shape}
-    return {"decision": DEFER, "reason": "; ".join(sorted({p["reason"] for p in blocking}))[:300], "parts": parts}
+    return {"decision": DEFER, "reason": "; ".join(sorted({p["reason"] for p in blocking}))[:300], "parts": parts,
+            "shape": {**shape, "only_dynamic": all(p["reason"] == "dynamic command name" for p in blocking)}}
 
 
 # ----------------------------------------------------------------------------- rewrite hints
@@ -646,8 +761,20 @@ def rewrite_hint(shape):
         what.append("shell loops")
         tips.append("Replace the loop with one command that takes several paths (`wc -l a b c`, `head -n 40 a b`, "
                     "`grep -n PAT a b`, `ls -la d1 d2`), or `find DIR -name GLOB -exec CMD {} +`.")
-    return ("agent-policy rewrite hint: Claude Code asks the user to approve %s even when they are read-only. "
-            "Retry with a rewritten command; don't ask the user. " % " and ".join(what)) + " ".join(tips)
+    if shape.get("bare"):
+        b = shape["bare"][0]
+        what.append("wrapped `%s` calls" % b)
+        tips.append("Run `%s` bare: exactly `%s <subcommand> <args>`, one per call, with no pipe, redirect, `;`/`&&` "
+                    "chain, `echo exit=$?`, `python3` or `jq`. Its output is already one compact JSON line: act on it "
+                    "as printed. Pass text input as a heredoc (`%s drop <ref> <<'EOF'`)." % (b, b, b))
+    if shape.get("vars"):
+        v = shape["vars"]
+        what.append("shell variables holding paths or commands")
+        tips.append("Drop the `%s=…` assignment%s and write the literal value everywhere `$%s` appears "
+                    "(absolute paths; call CLIs by name, e.g. `v2c step`, not `$V step`)."
+                    % (v[0], "s" if len(v) > 1 else "", "`, `$".join(v)))
+    return ("agent-policy rewrite hint: %s cost approval prompts and tokens. Retry with a rewritten command; don't "
+            "ask the user. " % " and ".join(what)) + " ".join(tips)
 
 
 def hint_gate(pol, session, cmd, wants_hint):
@@ -706,7 +833,9 @@ def hook(harness):
     d, reason = res["decision"], res["reason"]
     if d != DENY and hints_enabled(pol, harness):
         shape = res.get("shape") or {}
-        wants = d == ALLOW and bool(shape.get("cd") or shape.get("loop"))
+        wants = (d == ALLOW and bool(shape.get("cd") or shape.get("loop") or shape.get("vars"))) or \
+                (d == DEFER and bool(shape.get("vars")) and bool(shape.get("only_dynamic"))) or \
+                bool(shape.get("bare"))  # wrapped bare commands: hint whether or not the wrapper would be allowed
         if hint_gate(pol, data.get("session_id") or data.get("conversation_id"), cmd, wants):
             d, reason = DENY, rewrite_hint(shape)
     if harness in ("claude", "codex"):
@@ -759,6 +888,13 @@ TESTS = [
     ("git branch -D old", DEFER), ("git checkout -b feat/x", ALLOW), ("git checkout -- src/a.ts", DEFER),
     ("echo $((1+2))", ALLOW), ("bash -c 'git status && ls'", ALLOW), ("bash -c 'rm -rf src'", DEFER),
     ("while read f; do wc -l \"$f\"; done < list.txt", ALLOW), ("npx openspec validate x --strict", ALLOW),
+    ("find ~/x -maxdepth 3 -type d \\( -name a -o -name '*vision*' \\) | head", ALLOW),
+    ("find . \\( -name a -o -name b \\) -delete", DEFER), ("(cd /tmp && ls)", ALLOW),
+    ("git -C /r pull -q --ff-only", ALLOW), ("git -C /r checkout -q -b feat/x", ALLOW), ("git push -q", DEFER),
+    ("S=~/x; ls $S/a $S/b", ALLOW), ("V=/x/bin/v2c; $V step r1", DEFER),
+    ("npx --prefix apps/mobile vitest run --root apps/mobile a.test.ts", ALLOW), ("npx --prefix x tsx a.ts", DEFER),
+    ("node --test src/a.test.mjs", ALLOW), ("node -e 'console.log(1)'", DEFER), ("node scripts/build.mjs", DEFER),
+    ("bash /tmp/run-anything.sh", DEFER),
     ("bash /tmp/linear-q.sh", DEFER), ("awk '{print $1}' f | sort | uniq -c", ALLOW), ("awk '{system(\"rm x\")}' f", DEFER),
 ]
 
@@ -787,6 +923,18 @@ def self_test():
         os.remove(os.path.join(tempfile.gettempdir(), "agent-kit-hints", sess + ".json"))
     except OSError:
         pass
+    # bare_commands: a wrapped `v2c` call is flagged for a rewrite hint; bare calls and stdin feeds are not
+    bpol = dict(pol, bare_commands=["v2c"])
+    bare = [("v2c step r1", []), ("v2c step r1 2>&1", []), ("v2c drop r1/P1 <<'EOF'\nwhy\nEOF", []),
+            ("printf why | v2c drop r1/P1", []), ("v2c status a; v2c status b", []),
+            ("v2c step r1 > /tmp/s.json; python3 -c 'import json'", ["v2c"]), ("v2c step r1 | jq .", ["v2c"]),
+            ("v2c gate green r1/P1; echo exit=$?", ["v2c"]), ("cd /x && v2c step r1", ["v2c"])]
+    for cmd, want in bare:
+        got = (evaluate(cmd, work, bpol).get("shape") or {}).get("bare", [])
+        fails += got != want
+        if got != want:
+            print("FAIL bare %r want=%s got=%s" % (cmd, want, got))
+    seq += bare
     total = len(TESTS) + len(seq)
     print("%d/%d passed" % (total - fails, total))
     return 1 if fails else 0

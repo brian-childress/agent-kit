@@ -1,5 +1,5 @@
 {
-  "_doc": "Per-project overlay for agent-policy (all harnesses). Lists append to the global policy; scalars override. Delete what you don't need.",
+  "_doc": "Per-project overlay for agent-policy (all harnesses). Local dev setup: keep it in the main checkout, git-ignored via .git/info/exclude; every worktree inherits it. Lists append to the global policy; scalars override. Delete what you don't need.",
   "allow_prefixes": [],
   "deny_prefixes": [],
   "write_allow_globs": [],

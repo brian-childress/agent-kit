@@ -1,5 +1,5 @@
 {
-  "_doc": "Harness-neutral command policy. Overlays (merged in order): ~/.config/agent-kit/policy.json, <repo>/.agent-policy.json. Lists are appended; scalars/objects override.",
+  "_doc": "Harness-neutral command policy. Overlays (merged in order): ~/.config/agent-kit/policy.json, <main checkout>/.agent-policy.json (local, git-ignored; inherited by every worktree), <worktree>/.agent-policy.json. Lists are appended; scalars/objects override.",
   "allow_local_writes": true,
   "guards": {
     "no_ai_trailers": true,
@@ -10,6 +10,8 @@
   "rewrite_hints": { "enabled": true, "harnesses": ["claude"], "max_consecutive": 2 },
   "temp_dirs": ["/tmp", "/private/tmp", "/var/folders", "/private/var/folders", "$TMPDIR"],
   "write_allow_globs": [".artifacts/*", ".artifacts/**", "*.log"],
+  "bare_commands": ["v2c"],
+  "project_scripts": [".agent/verify", ".agent/v2c/test.sh", ".agent/v2c/checks.sh", ".agent/v2c/checks-quick.sh"],
 
   "readonly_commands": [
     "cat", "head", "tail", "grep", "egrep", "fgrep", "rg", "ag", "wc", "sort", "uniq", "cut", "tr", "paste", "join",
@@ -20,7 +22,7 @@
     "sha256sum", "base64", "od", "xxd", "hexdump", "strings", "cd", "pushd", "popd", "export", "unset", "set",
     "shopt", "wait", ":", "nc", "openssl", "getconf", "locale", "tput", "mktemp",
     "verify", "wait-for", "smoke", "tf-check", "ecs-deploy-status", "agent-policy", "agent-post-edit",
-    "tflint", "gitleaks", "shellcheck", "actionlint", "hadolint"
+    "tflint", "gitleaks", "shellcheck", "actionlint", "hadolint", "mdfind"
   ],
 
   "readonly_prefixes": [
@@ -30,6 +32,7 @@
     "git for-each-ref", "git name-rev", "git cherry", "git merge-tree", "git count-objects", "git show-ref",
     "git remote -v", "git remote show", "git remote get-url", "git config --get", "git config --list",
     "git config -l", "git config --get-all", "git version", "git help", "git var",
+    "claude --version", "bash -n",
     "gh pr view", "gh pr list", "gh pr checks", "gh pr diff", "gh pr status", "gh run view", "gh run list",
     "gh run watch", "gh repo view", "gh repo list", "gh issue view", "gh issue list", "gh issue status",
     "gh release view", "gh release list", "gh auth status", "gh workflow list", "gh workflow view", "gh search",
@@ -59,7 +62,7 @@
   ],
   "js_tools_readonly": [
     "tsc", "vitest", "jest", "biome check", "biome lint", "biome ci", "eslint", "prettier --check",
-    "prettier -c", "astro check", "next lint", "playwright test", "knip", "depcheck", "ts-prune"
+    "prettier -c", "astro check", "next lint", "playwright test", "knip", "depcheck", "ts-prune", "node --test"
   ],
 
   "local_write_prefixes": [
@@ -68,7 +71,8 @@
     "git stash pop", "git stash apply", "git worktree add", "git mv", "git pull --ff-only",
     "pnpm install", "pnpm i", "npm install", "npm ci", "npm i", "yarn install", "bun install",
     "biome check --write", "biome format --write", "biome lint --write", "prettier --write", "eslint --fix",
-    "dotnet format", "lefthook install", "terraform fmt"
+    "dotnet format", "lefthook install", "terraform fmt",
+    "v2c"
   ],
   "local_package_scripts": ["format", "lint:fix", "format:write"],
 
