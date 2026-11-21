@@ -10,8 +10,8 @@
   "rewrite_hints": { "enabled": true, "harnesses": ["claude"], "max_consecutive": 2 },
   "temp_dirs": ["/tmp", "/private/tmp", "/var/folders", "/private/var/folders", "$TMPDIR"],
   "write_allow_globs": [".artifacts/*", ".artifacts/**", "*.log"],
-  "bare_commands": ["v2c"],
-  "project_scripts": [".agent/verify", ".agent/v2c/test.sh", ".agent/v2c/checks.sh", ".agent/v2c/checks-quick.sh"],
+  "bare_commands": [],
+  "project_scripts": [".agent/verify"],
 
   "readonly_commands": [
     "cat", "head", "tail", "grep", "egrep", "fgrep", "rg", "ag", "wc", "sort", "uniq", "cut", "tr", "paste", "join",
@@ -71,8 +71,7 @@
     "git stash pop", "git stash apply", "git worktree add", "git mv", "git pull --ff-only",
     "pnpm install", "pnpm i", "npm install", "npm ci", "npm i", "yarn install", "bun install",
     "biome check --write", "biome format --write", "biome lint --write", "prettier --write", "eslint --fix",
-    "dotnet format", "lefthook install", "terraform fmt",
-    "v2c"
+    "dotnet format", "lefthook install", "terraform fmt"
   ],
   "local_package_scripts": ["format", "lint:fix", "format:write"],
 

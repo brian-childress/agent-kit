@@ -261,7 +261,7 @@ STDIN_SOURCES = {"echo", "printf", "cat"}
 
 
 def bare_violations(cmds, ops, pol):
-    """Commands listed in `bare_commands` (e.g. v2c, whose output is already compact JSON) must run alone: no stdout
+    """Commands listed in `bare_commands` (CLIs whose output is already compact) must run alone: no stdout
     redirect, no pipe out, no chaining with other commands. Feeding stdin (heredoc, or echo/printf/cat piped in) is
     fine. Returns the names of the bare commands that were wrapped."""
     bare = set(pol.get("bare_commands", []))
@@ -395,7 +395,7 @@ def write_target_ok(path, ctx):
 
 
 def project_script(w, ctx):
-    """`bash .agent/v2c/checks.sh …` or `./.agent/verify`: a repo-owned script listed in `project_scripts`
+    """`bash .agent/checks.sh …` or `./.agent/verify`: a repo-owned script listed in `project_scripts`
     (paths relative to the root of the repo or worktree that contains the script)."""
     names = ctx.pol.get("project_scripts", [])
     if not names or not w:
@@ -771,7 +771,7 @@ def rewrite_hint(shape):
         v = shape["vars"]
         what.append("shell variables holding paths or commands")
         tips.append("Drop the `%s=…` assignment%s and write the literal value everywhere `$%s` appears "
-                    "(absolute paths; call CLIs by name, e.g. `v2c step`, not `$V step`)."
+                    "(absolute paths; call CLIs by name, e.g. `mytool run`, not `$T run`)."
                     % (v[0], "s" if len(v) > 1 else "", "`, `$".join(v)))
     return ("agent-policy rewrite hint: %s cost approval prompts and tokens. Retry with a rewritten command; don't "
             "ask the user. " % " and ".join(what)) + " ".join(tips)

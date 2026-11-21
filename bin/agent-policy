@@ -1,4 +1,5 @@
 #!/bin/sh
-# agent-policy — harness-neutral shell command policy (see policy/agent_policy.py).
+# agent-policy — harness-neutral shell command policy (see policy/agent_policy.py), plus folder scopes, the
+# reviewed proposal queue and harness directory sync (policy/policy_review.py, which wraps agent_policy.py).
 KIT="${AGENT_KIT_HOME:-$(cd "$(dirname "$(readlink -f "$0" 2>/dev/null || echo "$0")")/.." && pwd)}"
-exec python3 -I "$KIT/policy/agent_policy.py" "$@"
+exec python3 -I "$KIT/policy/policy_review.py" "$@"

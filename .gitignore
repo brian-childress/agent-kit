@@ -1,3 +1,5 @@
 __pycache__/
+# machine-local proposal queue, decisions, sync and hint state (policy/policy_review.py)
+/state/
 *.pyc
 .DS_Store
