@@ -111,6 +111,12 @@ PY
     if [ $DRY = 0 ]; then { printf '%s\n\n' "$IMPORT"; [ -f "$C" ] && cat "$C"; } > "$C.tmp" && mv "$C.tmp" "$C"; fi
     say updated "$C (imports AGENTS.md)"
   else say ok "$C"; fi
+  # kit skills -> ~/.claude/skills/<name>
+  for d in "$KIT"/skills/*/; do
+    [ -f "$d/SKILL.md" ] || continue
+    n=$(basename "$d")
+    if [ $UNINSTALL = 1 ]; then unlink_kit "$HOME/.claude/skills/$n"; else link "${d%/}" "$HOME/.claude/skills/$n"; fi
+  done
   # retire the pre-kit Claude-only copies (backed up first)
   for legacy in "$HOME/.claude/hooks/pre-bash-guard.sh" "$HOME/.claude/hooks/post-edit-check.sh" "$HOME/.claude/bin" "$HOME/.claude/templates"; do
     if [ $UNINSTALL = 0 ] && [ -e "$legacy" ]; then

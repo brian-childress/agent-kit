@@ -8,6 +8,7 @@
    (list keys append; `directories` merges); they sit between the user overlay and the main checkout's
    `.agent-policy.json`. Broader access for a folder tree (e.g. every worktree of one product) goes here.
 2. Proposals. Session retros queue candidate entries; nothing reaches a policy file until a human accepts it.
+     agent-policy review                        (interactive: one card per proposal, a/t/r/g/s/q per card)
      agent-policy proposals add FILE            (JSON list or JSONL of proposals; merges evidence, dedupes)
      agent-policy proposals list [--all|--status S] [--json]
      agent-policy proposals show ID
@@ -428,6 +429,219 @@ def show(i):
 
 
 # ----------------------------------------------------------------------------- sync
+# ----------------------------------------------------------------------------- interactive review
+WHAT = {
+    "readonly_prefixes": "run `{v} …` without asking (it only reads)",
+    "local_write_prefixes": "run `{v} …` without asking (it only changes local files)",
+    "allow_prefixes": "run `{v} …` without asking",
+    "deny_prefixes": "never run `{v} …` (always blocked)",
+    "write_allow_globs": "let shell commands write files matching {v}",
+    "directories.read": "read files in {v} (outside the project folder) without asking",
+    "directories.write": "read and edit files in {v} (outside the project folder) without asking",
+}
+CAUSES = {
+    "bashMiss:no-rule-match": "no policy rule covered the command",
+    "outsideReadsBlocked": "the file was outside the project folder",
+    "safetyCheck": "Claude Code's built-in safety check",
+    "user_reject": "you refused it",
+    "user_abort": "you stopped it",
+}
+CHOICES = [
+    ("a", "Yes, allow it",
+     "Add it to the policy for {where}. The agent stops asking you about this."),
+    ("t", "Yes, but choose where it applies",
+     "Pick the reach: this repo only, a named group of folders, every project on this machine, or the kit itself."),
+    ("s", "Decide later",
+     "Leave it in the queue. It comes back the next time you run agent-policy review."),
+    ("r", "No",
+     "Don't add it. The agent keeps asking you, as it does today, and this is never suggested again."),
+    ("g", "No, and lock it",
+     "The agent keeps asking you, and this can never be added later, not even by accident. "
+     "Use it for anything destructive or risky."),
+    ("q", "Stop reviewing",
+     "Exit. Anything you haven't decided stays in the queue."),
+]
+
+
+def plain(p):
+    v = p["value"]
+    if p["key"] == "habit_hints":
+        return "when a command matches /%s/, stop it once and tell the agent: \"%s\"" % (v.get("pattern"), v.get("hint"))
+    return WHAT.get(p["key"], p["key"] + " += {v}").format(v=str(v).replace(HOME, "~"))
+
+
+def scope_names():
+    return sorted(os.path.basename(f)[:-5] for f in glob.glob(os.path.join(SCOPES, "*.json")))
+
+
+def plain_target(t):
+    if t.startswith("repo:"):
+        return "this repo only, %s (and all its worktrees)" % short_target(t[5:])
+    if t.startswith("scope:"):
+        try:
+            with open(os.path.join(SCOPES, t[6:] + ".json")) as f:
+                m = json.load(f).get("match", [])
+        except (OSError, ValueError):
+            m = []
+        return "the folder group '%s' (%s)" % (t[6:], ", ".join(m) or "new")
+    return {"user": "every project on this machine",
+            "base": "everyone who installs agent-kit (a change to the kit itself)"}.get(t, t)
+
+
+def _wrap(text, indent):
+    import shutil
+    import textwrap
+    width = max(40, shutil.get_terminal_size((100, 24)).columns - 2)
+    return textwrap.wrap(text, width, initial_indent=indent, subsequent_indent=indent) or [indent]
+
+
+def menu(title, options):
+    """Arrow-key picker (stdlib only). options = [(key, label, description)]; returns the chosen key, 'q' on Ctrl-C."""
+    import termios
+    import tty
+    fd, out, i, drawn = sys.stdin.fileno(), sys.stdout, 0, 0
+    keys = [o[0] for o in options]
+
+    def draw(final=False):
+        nonlocal drawn
+        if drawn:
+            out.write("\x1b[%dF\x1b[J" % drawn)
+        if final:
+            lines = ["  %s \x1b[1m%s\x1b[0m" % (title, options[i][1])]
+        else:
+            lines = ["  \x1b[1m%s\x1b[0m" % title]
+            for j, (_, label, _) in enumerate(options):
+                lines.append("  \x1b[36m❯ %s\x1b[0m" % label if j == i else "    " + label)
+            lines.append("")
+            lines += ["\x1b[2m%s\x1b[0m" % l for l in _wrap(options[i][2], "    ")]
+            lines.append("  \x1b[2m↑/↓ move · enter choose · ctrl-c stop\x1b[0m")
+        out.write("\n".join(lines) + "\n")
+        out.flush()
+        drawn = len(lines)
+
+    old = termios.tcgetattr(fd)
+    try:
+        tty.setcbreak(fd)
+        out.write("\x1b[?25l")
+        draw()
+        while True:
+            ch = os.read(fd, 8).decode(errors="ignore")
+            if ch in ("\x1b[A", "\x1bOA", "k"):
+                i = (i - 1) % len(options)
+            elif ch in ("\x1b[B", "\x1bOB", "j"):
+                i = (i + 1) % len(options)
+            elif ch in ("\r", "\n"):
+                draw(final=True)
+                return options[i][0]
+            elif ch in keys:
+                i = keys.index(ch)
+            draw()
+    except KeyboardInterrupt:
+        out.write("\n")
+        return "q"
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+        out.write("\x1b[?25h")
+        out.flush()
+
+
+def _card(p, n, total, cwd):
+    e = p["evidence"]
+    print("\n\x1b[1m── %d of %d %s\x1b[0m" % (n, total, "─" * 60))
+    rows = [("Allow the agent to", plain(p)), ("Applies to", plain_target(p["target"]))]
+    if p.get("rationale"):
+        rows.append(("Why it was suggested", p["rationale"]))
+    if e["prompts"]:
+        rows.append(("It asked you", "%d time(s) in %d session(s), last %s" % (
+            e["prompts"], len(e["sessions"]), e.get("last_seen", "?"))))
+    if e["reasons"]:
+        rows.append(("Because", "; ".join(CAUSES.get(r, r) for r in sorted(e["reasons"], key=lambda r: -e["reasons"][r]))))
+    for label, text in rows:
+        lines = _wrap(text, " " * 24)
+        print("  %-22s%s" % (label, lines[0][24:]))
+        for l in lines[1:]:
+            print(l)
+    if p["key"].endswith("_prefixes") and e["examples"]:
+        print("  Example commands (what happens today):")
+        for x, d in check_examples(p, target_cwd(p["target"], cwd)):
+            print("    %-24s %s" % ({"allow": "runs without asking", "deny": "blocked"}.get(d, "asks you"),
+                                    x.replace(HOME, "~")[:90]))
+    elif e["examples"]:
+        print("  Example commands:")
+        for x in e["examples"]:
+            print("    " + x.replace(HOME, "~")[:110])
+    print("  \x1b[2m%s · %s\x1b[0m" % (p["id"], p["key"]))
+    why = unsafe(p["key"], p["value"])
+    if why:
+        print("  \x1b[33m⚠ This can't be allowed: %s. Choose No or lock it.\x1b[0m" % why)
+    return why
+
+
+def pick_target(p, cwd, choose, ask):
+    repo = canon_target("repo", target_cwd(p["target"], cwd))
+    opts = [(repo, "This repo only", "Only sessions in %s." % plain_target(repo))]
+    opts += [("scope:" + n, "Folder group: " + n, "Sessions in %s." % plain_target("scope:" + n)) for n in scope_names()]
+    opts += [("scope:", "A new folder group…",
+              "Name a group of folders (for example every checkout of one product) and type which folders it covers."),
+             ("user", "Every project on this machine", "Your own user-wide policy (~/.config/agent-kit/policy.json)."),
+             ("base", "Everyone who installs agent-kit",
+              "The kit's own policy (config/policy.json). Only for entries every user would want."),
+             ("", "Back", "Return to the previous question.")]
+    t = choose("Where should it apply?", opts)
+    if t != "scope:":
+        return t, None
+    name = ask("  Name for the new folder group (letters, digits, -): ").strip()
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", name):
+        return "", None
+    globs = ask("  Folders it covers, space-separated (e.g. ~/code/myapp*): ").split()
+    return ("scope:" + name, globs) if globs else ("", None)
+
+
+def review(cwd, choose=None, ask=input):
+    """Walk the pending queue one card at a time with an arrow-key menu."""
+    choose = choose or menu
+    ps = [p for p in load_store()["proposals"].values() if p["status"] == "pending"]
+    ps.sort(key=lambda p: (-len(p["evidence"]["sessions"]), -p["evidence"]["prompts"], p["key"]))
+    if not ps:
+        print("Nothing to review: the queue is empty.")
+        return {}
+    print("%d suggestion(s) to review. Nothing changes until you choose Yes." % len(ps))
+    done, c = {}, None
+    for n, p in enumerate(ps, 1):
+        blocked = _card(p, n, len(ps), cwd)
+        opts = [(k, label, desc.format(where=plain_target(p["target"]))) for k, label, desc in CHOICES
+                if not (blocked and k in ("a", "t"))]
+        while True:
+            try:
+                c = choose("What should happen?", opts)
+                if c == "a":
+                    accept(p["id"], cwd=cwd)
+                elif c == "t":
+                    t, globs = pick_target(p, cwd, choose, ask)
+                    if not t:
+                        continue
+                    accept(p["id"], t, globs, cwd)
+                    c = "a"
+                elif c in ("r", "g"):
+                    reason = ask("  Why? (optional, enter to skip): ").strip()
+                    decide(p["id"], "rejected" if c == "r" else "keep-gated",
+                           reason or ("declined in review" if c == "r" else "locked in review"))
+            except SystemExit as err:  # accept/decide refusals: show them and ask again
+                print("  \x1b[33m%s\x1b[0m" % err)
+                continue
+            except (EOFError, KeyboardInterrupt):
+                c = "q"
+            break
+        if c == "q":
+            break
+        done[p["id"]] = c
+    tally = {k: sum(1 for v in done.values() if v == k) for k in "args"}
+    print("\nAllowed %d, declined %d, locked %d, left for later %d. %d still waiting in the queue." % (
+        tally["a"], tally["r"], tally["g"], tally["s"],
+        sum(1 for p in load_store()["proposals"].values() if p["status"] == "pending")))
+    return done
+
+
 def worktrees(cwd):
     out = subprocess.run(["git", "-C", cwd, "worktree", "list", "--porcelain"], capture_output=True, text=True)
     return [l[9:] for l in out.stdout.splitlines() if l.startswith("worktree ")] or [ap.repo_root(cwd)]
@@ -639,6 +853,34 @@ def self_test():
         decide(r4[0][1], "rejected", "not needed")
         r5 = add([{"key": "readonly_prefixes", "value": "zzqother ls", "target": "repo:" + repo}], t)
         ok("rejected stays rejected", r5[0][0] == "rejected")
+
+        rv = add([{"key": "readonly_prefixes", "value": "zzqrev one", "target": "repo:" + repo},
+                  {"key": "readonly_prefixes", "value": "zzqrev two", "target": "repo:" + repo},
+                  {"key": "readonly_prefixes", "value": "zzqrev three", "target": "repo:" + repo},
+                  {"key": "readonly_prefixes", "value": "zzqrev four", "target": "repo:" + repo}], t)
+        picks, texts, offered = iter(["r", "g", "a", "s"]), iter(["one-off", ""]), []
+
+        def choose(_, opts):
+            offered.append([o[0] for o in opts])
+            return next(picks)
+        stdout, sys.stdout = sys.stdout, io.StringIO()
+        try:
+            done = review(t, choose=choose, ask=lambda _: next(texts))
+        finally:
+            out, sys.stdout = sys.stdout.getvalue(), stdout
+        if os.environ.get("REVIEW_TEST_DEBUG"):
+            print(out)
+        # cards come in queue order (most sessions, most prompts, then key/id), so check by outcome, not position
+        st = [load_store()["proposals"][r[1]] for r in rv[:4]]
+        by = {s: [p for p in st if p["status"] == s] for s in ("rejected", "keep-gated", "accepted", "pending")}
+        ok("review: No records the reason",
+           len(by["rejected"]) == 1 and by["rejected"][0]["decided_reason"] == "one-off")
+        ok("review: lock with no reason uses a default",
+           len(by["keep-gated"]) == 1 and by["keep-gated"][0]["decided_reason"] == "locked in review")
+        ok("review: Yes applies", len(by["accepted"]) == 1 and
+           ap.evaluate(by["accepted"][0]["value"] + " x", repo).get("decision") == "allow")
+        ok("review: later stays pending, stop ends", len(by["pending"]) == 1 and len(done) == 4)
+        ok("review: every card offers Yes/No/lock/later/stop", all(set("argsq") <= set(o) for o in offered))
     print("%d failure(s)" % fails)
     return 1 if fails else 0
 
@@ -671,6 +913,12 @@ def main(argv):
         return self_test()
     if cmd == "sync":
         sync(opt(args, "--cwd", os.getcwd()), "--all-worktrees" in args, "--dry-run" in args, "--user" in args)
+        return 0
+    if cmd == "review" or (cmd == "proposals" and args[:1] == ["review"]):
+        if not sys.stdin.isatty():
+            print("agent-policy review is interactive; run it in a terminal (or use `proposals accept|reject`)")
+            return 2
+        review(opt(args, "--cwd", os.getcwd()))
         return 0
     if cmd == "scopes":
         cwd = opt(args, "--cwd", os.getcwd())
